@@ -1,7 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'account_page.dart';
 import 'settings_page.dart';
 import 'timetable_page.dart';
+import 'library_page.dart';
 
 class HomePage extends StatefulWidget {
   final String username;
@@ -21,6 +24,8 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   List<Map<String, String>> subjects = [];
+  bool _isLoading = true;
+  late String _username;
 
   final TextEditingController _subjectController = TextEditingController();
   String? _selectedTime;
@@ -44,8 +49,89 @@ class _HomePageState extends State<HomePage> {
     'Sun',
   ];
 
+  @override
+  void initState() {
+    super.initState();
+    _username = widget.username;
+    _loadUserData();
+  }
+
+  @override
+  void dispose() {
+    _subjectController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadUserData() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    try {
+      final userDoc = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.uid)
+          .get();
+
+      if (userDoc.exists && userDoc.data()?['username'] != null) {
+        if (mounted) {
+          setState(() => _username = userDoc.data()!['username']);
+        }
+      }
+
+      final snapshot = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.uid)
+          .collection('subjects')
+          .get();
+
+      if (!mounted) return;
+
+      setState(() {
+        subjects = snapshot.docs
+            .map((doc) => Map<String, String>.from(doc.data()))
+            .toList();
+        _isLoading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _saveSubjects() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    final collection = FirebaseFirestore.instance
+        .collection('users')
+        .doc(user.uid)
+        .collection('subjects');
+
+    final existing = await collection.get();
+    for (final doc in existing.docs) {
+      await doc.reference.delete();
+    }
+    for (final subject in subjects) {
+      await collection.add(subject);
+    }
+  }
+
+  Future<void> _updateUsername(String newUsername) async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    await FirebaseFirestore.instance.collection('users').doc(user.uid).set({
+      'username': newUsername,
+    }, SetOptions(merge: true));
+
+    if (mounted) {
+      setState(() => _username = newUsername);
+    }
+  }
+
   void _deleteSubject(int index) {
     setState(() => subjects.removeAt(index));
+    _saveSubjects();
   }
 
   void _showAddSubjectDialog() {
@@ -72,6 +158,7 @@ class _HomePageState extends State<HomePage> {
               'days': days.join(','),
             });
           });
+          _saveSubjects();
         },
       ),
     );
@@ -105,6 +192,7 @@ class _HomePageState extends State<HomePage> {
               'days': days.join(','),
             };
           });
+          _saveSubjects();
         },
       ),
     );
@@ -130,7 +218,7 @@ class _HomePageState extends State<HomePage> {
             child: CircleAvatar(
               backgroundColor: Colors.white24,
               child: Text(
-                widget.username[0].toUpperCase(),
+                _username[0].toUpperCase(),
                 style: TextStyle(
                   color: Colors.white,
                   fontWeight: FontWeight.bold,
@@ -151,17 +239,21 @@ class _HomePageState extends State<HomePage> {
         ),
         elevation: 4,
       ),
-      body: SingleChildScrollView(
-        padding: EdgeInsets.all(20),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            _buildWelcomeCard(),
-            SizedBox(height: 24),
-            _buildSubjectList(isDark),
-          ],
-        ),
-      ),
+      body: _isLoading
+          ? Center(
+              child: CircularProgressIndicator(color: Colors.blueGrey[700]),
+            )
+          : SingleChildScrollView(
+              padding: EdgeInsets.all(20),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _buildWelcomeCard(),
+                  SizedBox(height: 24),
+                  _buildSubjectList(isDark),
+                ],
+              ),
+            ),
     );
   }
 
@@ -196,7 +288,7 @@ class _HomePageState extends State<HomePage> {
                 ),
                 SizedBox(height: 4),
                 Text(
-                  widget.username,
+                  _username,
                   style: TextStyle(
                     color: Colors.white,
                     fontSize: 24,
@@ -222,7 +314,7 @@ class _HomePageState extends State<HomePage> {
             radius: 32,
             backgroundColor: Colors.white.withOpacity(0.2),
             child: Text(
-              widget.username[0].toUpperCase(),
+              _username[0].toUpperCase(),
               style: TextStyle(
                 color: Colors.white,
                 fontSize: 28,
@@ -287,132 +379,160 @@ class _HomePageState extends State<HomePage> {
         .where((d) => d.isNotEmpty)
         .toList();
 
-    return Container(
-      decoration: BoxDecoration(
-        color: isDark ? Color(0xFF2A2A3E) : Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.06),
-            blurRadius: 10,
-            offset: Offset(0, 3),
-          ),
-        ],
+    return GestureDetector(
+      onTap: () => Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) =>
+              LibraryPage(initialQuery: subjects[index]['subject']),
+        ),
       ),
-      padding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-      child: Row(
-        children: [
-          Container(
-            width: 46,
-            height: 46,
-            decoration: BoxDecoration(
-              color: color.withOpacity(0.12),
-              borderRadius: BorderRadius.circular(14),
+      child: Container(
+        decoration: BoxDecoration(
+          color: isDark ? Color(0xFF2A2A3E) : Colors.white,
+          borderRadius: BorderRadius.circular(16),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.06),
+              blurRadius: 10,
+              offset: Offset(0, 3),
             ),
-            child: Icon(Icons.book_rounded, color: color, size: 22),
-          ),
-          SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  subjects[index]['subject']!,
-                  style: TextStyle(
-                    fontWeight: FontWeight.w600,
-                    fontSize: 15,
-                    color: isDark ? Colors.white : Colors.blueGrey[900],
+          ],
+        ),
+        padding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        child: Row(
+          children: [
+            Container(
+              width: 46,
+              height: 46,
+              decoration: BoxDecoration(
+                color: color.withOpacity(0.12),
+                borderRadius: BorderRadius.circular(14),
+              ),
+              child: Icon(Icons.book_rounded, color: color, size: 22),
+            ),
+            SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    subjects[index]['subject']!,
+                    style: TextStyle(
+                      fontWeight: FontWeight.w600,
+                      fontSize: 15,
+                      color: isDark ? Colors.white : Colors.blueGrey[900],
+                    ),
+                    overflow: TextOverflow.ellipsis,
+                    maxLines: 2,
                   ),
-                  overflow: TextOverflow.ellipsis,
-                  maxLines: 2,
-                ),
-                SizedBox(height: 5),
-                Row(
-                  children: [
-                    Icon(Icons.access_time_rounded, size: 13, color: color),
-                    SizedBox(width: 4),
-                    Text(
-                      subjects[index]['time']!,
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: color,
-                        fontWeight: FontWeight.w600,
+                  SizedBox(height: 5),
+                  Row(
+                    children: [
+                      Icon(Icons.access_time_rounded, size: 13, color: color),
+                      SizedBox(width: 4),
+                      Text(
+                        subjects[index]['time']!,
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: color,
+                          fontWeight: FontWeight.w600,
+                        ),
                       ),
+                    ],
+                  ),
+                  if (days.isNotEmpty) ...[
+                    SizedBox(height: 6),
+                    Wrap(
+                      spacing: 4,
+                      runSpacing: 4,
+                      children: days.map((day) {
+                        return Container(
+                          padding: EdgeInsets.symmetric(
+                            horizontal: 7,
+                            vertical: 2,
+                          ),
+                          decoration: BoxDecoration(
+                            color: color.withOpacity(0.1),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Text(
+                            day,
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: color,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        );
+                      }).toList(),
                     ),
                   ],
-                ),
-                if (days.isNotEmpty) ...[
                   SizedBox(height: 6),
-                  Wrap(
-                    spacing: 4,
-                    runSpacing: 4,
-                    children: days.map((day) {
-                      return Container(
-                        padding: EdgeInsets.symmetric(
-                          horizontal: 7,
-                          vertical: 2,
+                  Row(
+                    children: [
+                      Icon(
+                        Icons.local_library_rounded,
+                        size: 12,
+                        color: Colors.blueGrey[300],
+                      ),
+                      SizedBox(width: 4),
+                      Text(
+                        'Tap to find related books',
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: Colors.blueGrey[300],
+                          fontStyle: FontStyle.italic,
                         ),
-                        decoration: BoxDecoration(
-                          color: color.withOpacity(0.1),
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: Text(
-                          day,
-                          style: TextStyle(
-                            fontSize: 11,
-                            color: color,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      );
-                    }).toList(),
+                      ),
+                    ],
                   ),
                 ],
+              ),
+            ),
+            SizedBox(width: 8),
+            PopupMenuButton<String>(
+              icon: Icon(Icons.more_vert, color: Colors.grey[400], size: 20),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+              onSelected: (val) {
+                if (val == 'edit') _showEditSubjectDialog(index);
+                if (val == 'delete') _deleteSubject(index);
+              },
+              itemBuilder: (context) => [
+                PopupMenuItem(
+                  value: 'edit',
+                  child: Row(
+                    children: [
+                      Icon(
+                        Icons.edit_outlined,
+                        size: 18,
+                        color: Colors.blueGrey[700],
+                      ),
+                      SizedBox(width: 10),
+                      Text('Edit'),
+                    ],
+                  ),
+                ),
+                PopupMenuItem(
+                  value: 'delete',
+                  child: Row(
+                    children: [
+                      Icon(
+                        Icons.delete_outline,
+                        size: 18,
+                        color: Colors.redAccent,
+                      ),
+                      SizedBox(width: 10),
+                      Text('Delete', style: TextStyle(color: Colors.redAccent)),
+                    ],
+                  ),
+                ),
               ],
             ),
-          ),
-          SizedBox(width: 8),
-          PopupMenuButton<String>(
-            icon: Icon(Icons.more_vert, color: Colors.grey[400], size: 20),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
-            ),
-            onSelected: (val) {
-              if (val == 'edit') _showEditSubjectDialog(index);
-              if (val == 'delete') _deleteSubject(index);
-            },
-            itemBuilder: (context) => [
-              PopupMenuItem(
-                value: 'edit',
-                child: Row(
-                  children: [
-                    Icon(
-                      Icons.edit_outlined,
-                      size: 18,
-                      color: Colors.blueGrey[700],
-                    ),
-                    SizedBox(width: 10),
-                    Text('Edit'),
-                  ],
-                ),
-              ),
-              PopupMenuItem(
-                value: 'delete',
-                child: Row(
-                  children: [
-                    Icon(
-                      Icons.delete_outline,
-                      size: 18,
-                      color: Colors.redAccent,
-                    ),
-                    SizedBox(width: 10),
-                    Text('Delete', style: TextStyle(color: Colors.redAccent)),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -486,7 +606,7 @@ class _HomePageState extends State<HomePage> {
                   backgroundColor: Colors.white,
                   radius: 28,
                   child: Text(
-                    widget.username[0].toUpperCase(),
+                    _username[0].toUpperCase(),
                     style: TextStyle(
                       color: Colors.blueGrey[800],
                       fontSize: 24,
@@ -496,7 +616,7 @@ class _HomePageState extends State<HomePage> {
                 ),
                 SizedBox(height: 10),
                 Text(
-                  widget.username,
+                  _username,
                   style: TextStyle(
                     color: Colors.white,
                     fontSize: 18,
@@ -529,6 +649,17 @@ class _HomePageState extends State<HomePage> {
             },
           ),
           _DrawerTile(
+            icon: Icons.local_library_rounded,
+            label: 'Library',
+            onTap: () {
+              Navigator.pop(context);
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (context) => LibraryPage()),
+              );
+            },
+          ),
+          _DrawerTile(
             icon: Icons.person_rounded,
             label: 'Account',
             onTap: () {
@@ -537,7 +668,7 @@ class _HomePageState extends State<HomePage> {
                 context,
                 MaterialPageRoute(
                   builder: (context) => AccountPage(
-                    username: widget.username,
+                    username: _username,
                     subjectCount: subjects.length,
                     subjects: subjects,
                   ),
@@ -556,8 +687,8 @@ class _HomePageState extends State<HomePage> {
                   builder: (context) => SettingsPage(
                     isDarkMode: widget.isDarkMode,
                     onThemeChanged: widget.onThemeChanged,
-                    username: widget.username,
-                    onUsernameChanged: (val) {},
+                    username: _username,
+                    onUsernameChanged: _updateUsername,
                   ),
                 ),
               );
@@ -666,8 +797,6 @@ class _SubjectBottomSheetState extends State<_SubjectBottomSheet> {
               ),
             ),
             SizedBox(height: 20),
-
-            // Subject name
             Text(
               'Subject Name',
               style: TextStyle(
@@ -703,8 +832,6 @@ class _SubjectBottomSheetState extends State<_SubjectBottomSheet> {
               ),
             ),
             SizedBox(height: 20),
-
-            // Time dropdown
             Text(
               'Class Time',
               style: TextStyle(
@@ -788,8 +915,6 @@ class _SubjectBottomSheetState extends State<_SubjectBottomSheet> {
               ),
             ),
             SizedBox(height: 20),
-
-            // Days selector
             Text(
               'Days',
               style: TextStyle(
@@ -846,10 +971,7 @@ class _SubjectBottomSheetState extends State<_SubjectBottomSheet> {
                 );
               }).toList(),
             ),
-
             SizedBox(height: 28),
-
-            // Submit button
             SizedBox(
               width: double.infinity,
               child: ElevatedButton(

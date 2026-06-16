@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'login_page.dart';
 
 class SettingsPage extends StatefulWidget {
@@ -22,6 +24,7 @@ class SettingsPage extends StatefulWidget {
 class _SettingsPageState extends State<SettingsPage> {
   late bool _notifications;
   late bool _darkMode;
+  late String _currentUsername;
   final _usernameController = TextEditingController();
   final _oldPasswordController = TextEditingController();
   final _newPasswordController = TextEditingController();
@@ -31,11 +34,20 @@ class _SettingsPageState extends State<SettingsPage> {
     super.initState();
     _notifications = true;
     _darkMode = widget.isDarkMode;
+    _currentUsername = widget.username;
     _usernameController.text = widget.username;
   }
 
+  @override
+  void dispose() {
+    _usernameController.dispose();
+    _oldPasswordController.dispose();
+    _newPasswordController.dispose();
+    super.dispose();
+  }
+
   void _showChangeUsernameDialog() {
-    _usernameController.text = widget.username;
+    _usernameController.text = _currentUsername;
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
@@ -62,13 +74,36 @@ class _SettingsPageState extends State<SettingsPage> {
             child: Text('Cancel', style: TextStyle(color: Colors.grey)),
           ),
           ElevatedButton(
-            onPressed: () {
-              if (_usernameController.text.isNotEmpty) {
-                widget.onUsernameChanged(_usernameController.text);
+            onPressed: () async {
+              final newUsername = _usernameController.text.trim();
+              if (newUsername.isEmpty) return;
+
+              final user = FirebaseAuth.instance.currentUser;
+              if (user == null) return;
+
+              // Save to Firestore
+              await FirebaseFirestore.instance
+                  .collection('users')
+                  .doc(user.uid)
+                  .set({'username': newUsername}, SetOptions(merge: true));
+
+              // Update locally
+              setState(() => _currentUsername = newUsername);
+
+              // Notify HomePage to update
+              widget.onUsernameChanged(newUsername);
+
+              if (mounted) {
                 Navigator.pop(context);
-                ScaffoldMessenger.of(
-                  context,
-                ).showSnackBar(SnackBar(content: Text('Username updated!')));
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text('Username updated!'),
+                    behavior: SnackBarBehavior.floating,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                );
               }
             },
             style: ElevatedButton.styleFrom(
@@ -146,16 +181,49 @@ class _SettingsPageState extends State<SettingsPage> {
             child: Text('Cancel', style: TextStyle(color: Colors.grey)),
           ),
           ElevatedButton(
-            onPressed: () {
-              if (_oldPasswordController.text == '1234') {
-                Navigator.pop(context);
-                ScaffoldMessenger.of(
-                  context,
-                ).showSnackBar(SnackBar(content: Text('Password updated!')));
-              } else {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text('Current password is incorrect!')),
+            onPressed: () async {
+              final user = FirebaseAuth.instance.currentUser;
+              if (user == null) return;
+
+              try {
+                final credential = EmailAuthProvider.credential(
+                  email: user.email!,
+                  password: _oldPasswordController.text,
                 );
+                await user.reauthenticateWithCredential(credential);
+                await user.updatePassword(_newPasswordController.text);
+
+                if (mounted) {
+                  Navigator.pop(context);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text('Password updated successfully!'),
+                      behavior: SnackBarBehavior.floating,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                  );
+                }
+              } on FirebaseAuthException catch (e) {
+                String message = 'An error occurred';
+                if (e.code == 'wrong-password') {
+                  message = 'Current password is incorrect';
+                } else if (e.code == 'weak-password') {
+                  message = 'New password is too weak';
+                }
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text(message),
+                      backgroundColor: Colors.redAccent,
+                      behavior: SnackBarBehavior.floating,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                  );
+                }
               }
             },
             style: ElevatedButton.styleFrom(
@@ -171,10 +239,26 @@ class _SettingsPageState extends State<SettingsPage> {
     );
   }
 
+  Future<void> _logout() async {
+    await FirebaseAuth.instance.signOut();
+    if (mounted) {
+      Navigator.pushAndRemoveUntil(
+        context,
+        MaterialPageRoute(
+          builder: (context) => LoginPage(
+            onThemeChanged: widget.onThemeChanged,
+            isDarkMode: widget.isDarkMode,
+          ),
+        ),
+        (route) => false,
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Color(0xFFF4F5F7),
+      backgroundColor: Color(0xFFF0F2F5),
       appBar: AppBar(
         backgroundColor: Colors.blueGrey[800],
         foregroundColor: Colors.white,
@@ -200,9 +284,7 @@ class _SettingsPageState extends State<SettingsPage> {
                 ),
               ],
             ),
-
             SizedBox(height: 16),
-
             _SettingsSection(
               title: 'Notifications',
               children: [
@@ -218,9 +300,7 @@ class _SettingsPageState extends State<SettingsPage> {
                 ),
               ],
             ),
-
             SizedBox(height: 16),
-
             _SettingsSection(
               title: 'Account',
               children: [
@@ -230,6 +310,10 @@ class _SettingsPageState extends State<SettingsPage> {
                     color: Colors.blueGrey[700],
                   ),
                   title: Text('Change Username'),
+                  subtitle: Text(
+                    _currentUsername,
+                    style: TextStyle(color: Colors.blueGrey[400], fontSize: 12),
+                  ),
                   trailing: Icon(Icons.chevron_right, color: Colors.grey),
                   onTap: _showChangeUsernameDialog,
                 ),
@@ -245,9 +329,7 @@ class _SettingsPageState extends State<SettingsPage> {
                 ),
               ],
             ),
-
             SizedBox(height: 16),
-
             _SettingsSection(
               title: 'Session',
               children: [
@@ -257,18 +339,7 @@ class _SettingsPageState extends State<SettingsPage> {
                     'Logout',
                     style: TextStyle(color: Colors.redAccent),
                   ),
-                  onTap: () {
-                    Navigator.pushAndRemoveUntil(
-                      context,
-                      MaterialPageRoute(
-                        builder: (context) => LoginPage(
-                          onThemeChanged: widget.onThemeChanged,
-                          isDarkMode: widget.isDarkMode,
-                        ),
-                      ),
-                      (route) => false,
-                    );
-                  },
+                  onTap: _logout,
                 ),
               ],
             ),
